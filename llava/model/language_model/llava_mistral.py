@@ -14,6 +14,8 @@ from ..llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
 
 class LlavaMistralConfig(MistralConfig):
     model_type = "llava_mistral"
+    use_mhc: bool = False
+    n_streams: int = 2
 
 
 class LlavaMistralModel(LlavaMetaModel, MistralModel):
@@ -21,6 +23,35 @@ class LlavaMistralModel(LlavaMetaModel, MistralModel):
 
     def __init__(self, config: MistralConfig):
         super(LlavaMistralModel, self).__init__(config)
+
+        if getattr(config, 'use_mhc', False):
+            from llava.model.mhc import mHCResidual
+            from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
+            n_streams = getattr(config, 'n_streams', 2)
+
+            for layer in self.layers:
+                layer.mhc_attn = mHCResidual(n_streams=n_streams)
+                layer.mhc_mlp  = mHCResidual(n_streams=n_streams)
+
+            def mhc_forward(self, hidden_states, attention_mask=None,
+                            position_ids=None, past_key_value=None,
+                            output_attentions=False, use_cache=False, **kwargs):
+                residual = hidden_states
+                hidden_states = self.input_layernorm(hidden_states)
+                attn_out, self_attn_weights, pkv = self.self_attn(
+                    hidden_states, attention_mask, position_ids,
+                    past_key_value, output_attentions, use_cache, **kwargs
+                )
+                hidden_states = self.mhc_attn(residual, attn_out) if hasattr(self, 'mhc_attn') else residual + attn_out
+
+                residual = hidden_states
+                hidden_states = self.post_attention_layernorm(hidden_states)
+                mlp_out = self.mlp(hidden_states)
+                hidden_states = self.mhc_mlp(residual, mlp_out) if hasattr(self, 'mhc_mlp') else residual + mlp_out
+
+                return (hidden_states, self_attn_weights, pkv)
+
+            MistralDecoderLayer.forward = mhc_forward
 
 
 class LlavaMistralForCausalLM(MistralForCausalLM, LlavaMetaForCausalLM):
@@ -32,7 +63,6 @@ class LlavaMistralForCausalLM(MistralForCausalLM, LlavaMetaForCausalLM):
 
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        # Initialize weights and apply final processing
         self.post_init()
 
     def get_model(self):
@@ -130,7 +160,8 @@ class LlavaMistralForCausalLM(MistralForCausalLM, LlavaMetaForCausalLM):
         images = kwargs.pop("images", None)
         image_sizes = kwargs.pop("image_sizes", None)
         inputs = super().prepare_inputs_for_generation(
-            input_ids, past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs
+            input_ids, past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds, **kwargs
         )
         if images is not None:
             inputs['images'] = images
