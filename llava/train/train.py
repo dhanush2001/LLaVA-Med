@@ -54,6 +54,8 @@ IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= versio
 class ModelArguments:
     model_name_or_path: Optional[str] = field(default="facebook/opt-125m")
     version: Optional[str] = field(default="v0")
+    use_mhc: bool = field(default=False)
+    n_streams: int = field(default=2)
     freeze_backbone: bool = field(default=False)
     tune_mm_mlp_adapter: bool = field(default=False)
     vision_tower: Optional[str] = field(default=None)
@@ -791,6 +793,8 @@ def train(attn_implementation=None):
     parser = transformers.HfArgumentParser(
         (ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    if model_args.n_streams < 1:
+        raise ValueError("--n_streams must be >= 1")
     local_rank = training_args.local_rank
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
 
@@ -813,10 +817,17 @@ def train(attn_implementation=None):
             )
         ))
 
+    model_config_overrides = {
+        "use_mhc": model_args.use_mhc,
+        "n_streams": model_args.n_streams,
+    }
+
     if model_args.vision_tower is not None:
         if 'mpt' in model_args.model_name_or_path:
             config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
             config.attn_config['attn_impl'] = training_args.mpt_attn_impl
+            config.use_mhc = model_args.use_mhc
+            config.n_streams = model_args.n_streams
             model = LlavaMptForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
                 config=config,
@@ -829,6 +840,7 @@ def train(attn_implementation=None):
                 cache_dir=training_args.cache_dir,
                 attn_implementation=attn_implementation,
                 torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                **model_config_overrides,
                 **bnb_model_from_pretrained_args
             )
     else:
@@ -837,6 +849,7 @@ def train(attn_implementation=None):
             cache_dir=training_args.cache_dir,
             attn_implementation=attn_implementation,
             torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+            **model_config_overrides,
             **bnb_model_from_pretrained_args
         )
     model.config.use_cache = False

@@ -2,30 +2,35 @@ import torch
 import torch.nn as nn
 
 
-def sinkhorn_knopp(W: torch.Tensor, n_iters: int = 50) -> torch.Tensor:
-    """Project W onto Birkhoff Polytope (doubly stochastic matrices)."""
-    W = W.abs() + 1e-8
-    for _ in range(n_iters):
-        W = W / W.sum(dim=-1, keepdim=True)
-        W = W / W.sum(dim=-2, keepdim=True)
-    return W
+def row_stochastic(W: torch.Tensor) -> torch.Tensor:
+    """Normalize each row into a probability distribution."""
+    return torch.softmax(W, dim=-1)
 
 
 class mHCResidual(nn.Module):
     def __init__(self, n_streams: int = 2, n_iters: int = 50):
         super().__init__()
+        if n_streams < 1:
+            raise ValueError("n_streams must be >= 1")
+
         self.N = n_streams
-        self.n_iters = n_iters
-        # Initialize close to identity so early training is stable
-        self.W_raw = nn.Parameter(
-            torch.eye(n_streams) * 2.0 + 0.01 * torch.randn(n_streams, n_streams)
-        )
+        self.n_iters = n_iters  # kept for backward compatibility with callers
+
+        # Each stream mixes two sources: residual and sublayer output.
+        init = torch.zeros(n_streams, 2)
+        init[:, 0] = 2.0  # start closer to residual connection for stability
+        self.W_raw = nn.Parameter(init + 0.01 * torch.randn(n_streams, 2))
+
+        # Learn how to combine the stream outputs into one tensor.
+        self.output_logits = nn.Parameter(torch.zeros(n_streams))
 
     def forward(self, residual: torch.Tensor, sublayer_out: torch.Tensor) -> torch.Tensor:
-        W = sinkhorn_knopp(self.W_raw, self.n_iters)
-        stream_0 = W[0, 0] * residual + W[0, 1] * sublayer_out
-        stream_1 = W[1, 0] * residual + W[1, 1] * sublayer_out
-        return stream_0 + stream_1
+        mix_weights = row_stochastic(self.W_raw)  # [N, 2]
+        sources = torch.stack((residual, sublayer_out), dim=0)  # [2, ...]
+        mixed_streams = torch.einsum("ns,s...->n...", mix_weights, sources)  # [N, ...]
+
+        stream_gates = torch.softmax(self.output_logits, dim=0)  # [N]
+        return torch.einsum("n,n...->...", stream_gates, mixed_streams)
 
 
 if __name__ == "__main__":
@@ -35,13 +40,13 @@ if __name__ == "__main__":
     out = mhc(x, torch.randn(2, 10, 512))
     assert out.shape == x.shape, f"Shape mismatch: {out.shape}"
 
-    W = sinkhorn_knopp(mhc.W_raw)
+    W = row_stochastic(mhc.W_raw)
     row_sums = W.sum(-1)
-    col_sums = W.sum(-2)
-    print("Row sums:", row_sums.detach().numpy())   # should be [1.0, 1.0]
-    print("Col sums:", col_sums.detach().numpy())   # should be [1.0, 1.0]
+    gate_sums = torch.softmax(mhc.output_logits, dim=0).sum()
+    print("Row sums:", row_sums.detach().numpy())   # should be [1.0, ..., 1.0]
+    print("Gate sum:", gate_sums.item())            # should be 1.0
 
-    assert torch.allclose(row_sums.detach(), torch.ones(2), atol=5e-3), f"Row sums off: {row_sums}"
-    assert torch.allclose(col_sums.detach(), torch.ones(2), atol=5e-3), f"Col sums off: {col_sums}"
+    assert torch.allclose(row_sums.detach(), torch.ones_like(row_sums), atol=5e-3), f"Row sums off: {row_sums}"
+    assert torch.allclose(gate_sums.detach(), torch.tensor(1.0), atol=1e-6), f"Gate sum off: {gate_sums}"
     print("mHC PASSED — output shape:", out.shape)
-    print("W (doubly stochastic):\n", W.detach().numpy())
+    print("W (row-stochastic):\n", W.detach().numpy())
