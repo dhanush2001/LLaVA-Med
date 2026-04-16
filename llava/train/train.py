@@ -121,8 +121,11 @@ class TrainingArguments(transformers.TrainingArguments):
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
-    from deepspeed import zero
-    from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
+    try:
+        from deepspeed import zero
+        from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
+    except ImportError:
+        return param.detach().cpu().clone()
     if hasattr(param, "ds_id"):
         if param.ds_status == ZeroParamStatus.NOT_AVAILABLE:
             if not ignore_status:
@@ -132,9 +135,6 @@ def maybe_zero_3(param, ignore_status=False, name=None):
     else:
         param = param.detach().cpu().clone()
     return param
-
-
-# Borrowed from peft.utils.get_peft_model_state_dict
 def get_peft_state_maybe_zero_3(named_params, bias):
     if bias == "none":
         to_return = {k: t for k, t in named_params if "lora_" in k}
