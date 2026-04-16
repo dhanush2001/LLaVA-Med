@@ -56,7 +56,7 @@ def save_split(ds, split, out_dir):
 
         records.append({
             "id": f"{split}_{i}",
-            "image": img_path,
+            "image": f"images/{split}/{i}.jpg",
             "answer_type": "closed" if answer.lower() in ["yes", "no"] else "open",
             "conversations": [
                 {"from": "human", "value": f"<image>\n{question}"},

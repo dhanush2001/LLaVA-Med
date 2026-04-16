@@ -151,9 +151,9 @@ def get_peft_state_maybe_zero_3(named_params, bias):
                 lora_bias_names.add(bias_name)
             elif "bias" in k:
                 maybe_lora_bias[k] = t
-        for k, t in maybe_lora_bias:
-            if bias_name in lora_bias_names:
-                to_return[bias_name] = t
+        for k, t in maybe_lora_bias.items():
+            if k in lora_bias_names:
+                to_return[k] = t
     else:
         raise NotImplementedError
     to_return = {k: maybe_zero_3(v, ignore_status=True) for k, v in to_return.items()}
@@ -831,16 +831,9 @@ def train(attn_implementation=None):
 
     if model_args.vision_tower is not None:
         if 'mpt' in model_args.model_name_or_path:
-            config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
-            config.attn_config['attn_impl'] = training_args.mpt_attn_impl
-            config.use_mhc = model_args.use_mhc
-            config.n_streams = model_args.n_streams
-            model = LlavaMptForCausalLM.from_pretrained(
-                model_args.model_name_or_path,
-                torch_dtype=torch.float16,
-                config=config,
-                cache_dir=training_args.cache_dir,
-                **bnb_model_from_pretrained_args
+            raise NotImplementedError(
+                "MPT models are not supported in this codebase. "
+                "Use a Mistral-based model with --model_name_or_path."
             )
         else:
             # Use LlavaMistralForCausalLM so MHC patches in LlavaMistralModel are applied
