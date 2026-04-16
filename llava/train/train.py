@@ -56,6 +56,7 @@ class ModelArguments:
     version: Optional[str] = field(default="v0")
     use_mhc: bool = field(default=False)
     n_streams: int = field(default=2)
+    n_iters_sinkhorn: int = field(default=20, metadata={"help": "Sinkhorn-Knopp iterations for Birkhoff projection in mHC layers."})
     freeze_backbone: bool = field(default=False)
     tune_mm_mlp_adapter: bool = field(default=False)
     vision_tower: Optional[str] = field(default=None)
@@ -793,8 +794,8 @@ def train(attn_implementation=None):
     parser = transformers.HfArgumentParser(
         (ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    if model_args.n_streams < 1:
-        raise ValueError("--n_streams must be >= 1")
+    if model_args.use_mhc and model_args.n_streams != 2:
+        raise ValueError("--n_streams must be 2 when --use_mhc is set (Birkhoff polytope requires a square mixing matrix)")
     local_rank = training_args.local_rank
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
 
@@ -820,6 +821,7 @@ def train(attn_implementation=None):
     model_config_overrides = {
         "use_mhc": model_args.use_mhc,
         "n_streams": model_args.n_streams,
+        "n_iters_sinkhorn": model_args.n_iters_sinkhorn,
     }
 
     if model_args.vision_tower is not None:

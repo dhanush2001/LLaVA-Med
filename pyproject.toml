@@ -13,15 +13,23 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
 ]
 dependencies = [
+    # --- core ML stack (torch must be installed separately with the right CUDA wheel,
+    #     e.g. pip install torch==2.1.2 --index-url https://download.pytorch.org/whl/cu121)
+    "torch>=2.0.1",
     "transformers==4.36.2",
     "tokenizers>=0.15.0",
     "sentencepiece==0.1.99",
     "shortuuid",
-    "accelerate==0.21.0",
-    "peft==0.4.0",
-    "bitsandbytes==0.41.0",
+    # accelerate>=0.25.0 is required for transformers 4.36.2 + torch 2.x multi-GPU;
+    # 0.21.0 predates transformers 4.36.2 and has broken distributed APIs with torch 2.1+
+    "accelerate>=0.25.0",
+    # peft 0.6+ aligns with transformers 4.36 LoRA APIs; 0.4.0 has breaking changes
+    "peft>=0.6.0",
+    # bitsandbytes 0.43.0 added proper CUDA 12.x support; 0.41.0 breaks on Lambda A100s
+    "bitsandbytes>=0.43.0",
     "pydantic<2,>=1",
     "markdown2[all]",
+    "packaging",
     "protobuf",
     "numpy",
     "scikit-learn==1.2.2",
@@ -37,17 +45,19 @@ dependencies = [
     "tiktoken",
     "openai==1.12.0",
     "backoff",
+    # Pillow is needed by train.py (from PIL import Image), not only eval
+    "pillow>=9.4.0",
 ]
 
 [project.optional-dependencies]
-train = ["deepspeed==0.9.5", "ninja", "wandb"]
+# deepspeed 0.12.6+ compiles cleanly on CUDA 12.x (Lambda A100); 0.9.5 does not
+train = ["deepspeed>=0.12.6", "ninja", "wandb"]
 eval = [
     "azure-ai-ml",
     "datasets",
     "fire",
     "opencv-python",
     "openpyxl==3.1.2",
-    "pillow==9.4.0",
     "python-Levenshtein",
     "rich",
     "streamlit==1.29.0",

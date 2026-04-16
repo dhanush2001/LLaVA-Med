@@ -1,3 +1,4 @@
+import types
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -16,6 +17,7 @@ class LlavaMistralConfig(MistralConfig):
     model_type = "llava_mistral"
     use_mhc: bool = False
     n_streams: int = 2
+    n_iters_sinkhorn: int = 20
 
 
 class LlavaMistralModel(LlavaMetaModel, MistralModel):
@@ -26,32 +28,49 @@ class LlavaMistralModel(LlavaMetaModel, MistralModel):
 
         if getattr(config, 'use_mhc', False):
             from llava.model.mhc import mHCResidual
-            from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
-            n_streams = getattr(config, 'n_streams', 2)
-
-            for layer in self.layers:
-                layer.mhc_attn = mHCResidual(n_streams=n_streams)
-                layer.mhc_mlp  = mHCResidual(n_streams=n_streams)
+            n_streams       = getattr(config, 'n_streams', 2)
+            n_iters_sinkhorn = getattr(config, 'n_iters_sinkhorn', 20)
 
             def mhc_forward(self, hidden_states, attention_mask=None,
                             position_ids=None, past_key_value=None,
                             output_attentions=False, use_cache=False, **kwargs):
+                # --- attention sub-layer ---
                 residual = hidden_states
                 hidden_states = self.input_layernorm(hidden_states)
                 attn_out, self_attn_weights, pkv = self.self_attn(
-                    hidden_states, attention_mask, position_ids,
-                    past_key_value, output_attentions, use_cache, **kwargs
+                    hidden_states=hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_value,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                    **kwargs,
                 )
-                hidden_states = self.mhc_attn(residual, attn_out) if hasattr(self, 'mhc_attn') else residual + attn_out
+                hidden_states = self.mhc_attn(residual, attn_out)
 
+                # --- MLP sub-layer ---
                 residual = hidden_states
                 hidden_states = self.post_attention_layernorm(hidden_states)
                 mlp_out = self.mlp(hidden_states)
-                hidden_states = self.mhc_mlp(residual, mlp_out) if hasattr(self, 'mhc_mlp') else residual + mlp_out
+                hidden_states = self.mhc_mlp(residual, mlp_out)
 
-                return (hidden_states, self_attn_weights, pkv)
+                # Build output tuple in the format MistralModel expects:
+                #   always:              (hidden_states,)
+                #   if output_attentions: + (attn_weights,)
+                #   if use_cache:         + (past_key_value,)
+                outputs = (hidden_states,)
+                if output_attentions:
+                    outputs += (self_attn_weights,)
+                if use_cache:
+                    outputs += (pkv,)
+                return outputs
 
-            MistralDecoderLayer.forward = mhc_forward
+            # Patch each layer instance individually — avoids polluting the
+            # MistralDecoderLayer class and breaking other models in the same process.
+            for layer in self.layers:
+                layer.mhc_attn = mHCResidual(n_streams=n_streams, n_iters=n_iters_sinkhorn)
+                layer.mhc_mlp  = mHCResidual(n_streams=n_streams, n_iters=n_iters_sinkhorn)
+                layer.forward  = types.MethodType(mhc_forward, layer)
 
 
 class LlavaMistralForCausalLM(MistralForCausalLM, LlavaMetaForCausalLM):
