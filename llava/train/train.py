@@ -33,6 +33,7 @@ from llava.train.llava_trainer import LLaVATrainer
 
 from llava import conversation as conversation_lib
 from llava.model import *
+from llava.model.language_model.llava_mistral import LlavaMistralForCausalLM
 from llava.mm_utils import tokenizer_image_token
 
 from PIL import Image
@@ -837,7 +838,8 @@ def train(attn_implementation=None):
                 **bnb_model_from_pretrained_args
             )
         else:
-            model = LlavaLlamaForCausalLM.from_pretrained(
+            # Use LlavaMistralForCausalLM so MHC patches in LlavaMistralModel are applied
+            model = LlavaMistralForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
                 cache_dir=training_args.cache_dir,
                 attn_implementation=attn_implementation,
