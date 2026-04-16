@@ -62,12 +62,16 @@ class ModelArguments:
     tune_mm_mlp_adapter: bool = field(default=False)
     vision_tower: Optional[str] = field(default=None)
     mm_vision_select_layer: Optional[int] = field(default=-1)   # default to the last layer
+    feature_outs: Optional[int] = field(default=-2)
+    img_size: Optional[int] = field(default=224)
+    vision_backbone: Optional[str] = field(default=None)
+    segtok_posembed: bool = field(default=False)
+    mm_vision_select_feature: Optional[str] = field(default="patch")
     pretrain_mm_mlp_adapter: Optional[str] = field(default=None)
     mm_projector_type: Optional[str] = field(default='linear')
     mm_use_im_start_end: bool = field(default=False)
     mm_use_im_patch_token: bool = field(default=True)
     mm_patch_merge_type: Optional[str] = field(default='flat')
-    mm_vision_select_feature: Optional[str] = field(default="patch")
 
 
 @dataclass
@@ -833,6 +837,7 @@ def train(attn_implementation=None):
             config.n_streams = model_args.n_streams
             model = LlavaMptForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
+                torch_dtype=torch.float16,
                 config=config,
                 cache_dir=training_args.cache_dir,
                 **bnb_model_from_pretrained_args
@@ -841,18 +846,18 @@ def train(attn_implementation=None):
             # Use LlavaMistralForCausalLM so MHC patches in LlavaMistralModel are applied
             model = LlavaMistralForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
+                torch_dtype=torch.float16,
                 cache_dir=training_args.cache_dir,
                 attn_implementation=attn_implementation,
-                torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
                 **model_config_overrides,
                 **bnb_model_from_pretrained_args
             )
     else:
         model = transformers.LlamaForCausalLM.from_pretrained(
             model_args.model_name_or_path,
+                torch_dtype=torch.float16,
             cache_dir=training_args.cache_dir,
             attn_implementation=attn_implementation,
-            torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
             **model_config_overrides,
             **bnb_model_from_pretrained_args
         )
@@ -895,6 +900,7 @@ def train(attn_implementation=None):
     if 'mpt' in model_args.model_name_or_path:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
+                torch_dtype=torch.float16,
             cache_dir=training_args.cache_dir,
             model_max_length=training_args.model_max_length,
             padding_side="right"
@@ -902,6 +908,7 @@ def train(attn_implementation=None):
     else:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
+                torch_dtype=torch.float16,
             cache_dir=training_args.cache_dir,
             model_max_length=training_args.model_max_length,
             padding_side="right",
