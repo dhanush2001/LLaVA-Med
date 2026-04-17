@@ -858,6 +858,10 @@ def train(attn_implementation=None):
 
     if model_args.freeze_backbone:
         model.model.requires_grad_(False)
+        if model_args.use_mhc:
+            for name, param in model.named_parameters():
+                if any(k in name for k in ['mhcmlp', 'mhcattn', 'lora_']):
+                    param.requires_grad = True
 
     if training_args.bits in [4, 8]:
         from peft import prepare_model_for_kbit_training
@@ -889,6 +893,11 @@ def train(attn_implementation=None):
                 model.to(torch.float16)
         rank0_print("Adding LoRA adapters...")
         model = get_peft_model(model, lora_config)
+        if model_args.use_mhc:
+            for name, param in model.named_parameters():
+                if any(k in name for k in ['mhcmlp', 'mhcattn']):
+                    param.requires_grad = True
+            rank0_print("Re-enabled mHC parameters for training")
 
     if 'mpt' in model_args.model_name_or_path:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
