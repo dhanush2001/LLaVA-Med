@@ -1,259 +1,245 @@
-# LLaVA-Med: Large Language and Vision Assistant for Biomedicine
+# LLaVA-Med + Multimodal Hierarchical Classifier (mHC) on PathVQA
+
+This repository extends [Microsoft LLaVA-Med v1.5](https://github.com/microsoft/LLaVA-Med) by integrating a
+**Multimodal Hierarchical Classifier (mHC)** for biomedical Visual Question Answering on the **PathVQA** dataset.
+
+The mHC adds hierarchical classification heads (mhcmlp + mhcattn) on top of the LLaVA-Med vision-language backbone,
+enabling richer cross-modal reasoning for pathology images.
+
+---
+
+## 1. Environment Setup
+
+    conda create -n llava-med python=3.10 -y
+    conda activate llava-med
+    cd LLaVA-Med
+    pip install -e .
+    pip install peft bitsandbytes shortuuid deepspeed
+
+---
+
+## 2. Dataset: PathVQA
+
+Place data under the following structure:
+
+    data/
+    └── pathvqa/
+        ├── train.json
+        ├── val.json
+        ├── test.json
+        └── images/
+            ├── train/
+            ├── val/
+            └── test/
+
+The JSON files are lists of conversation-style entries with fields:
+- id, image, answer_type, conversations (human + gpt turns)
+
+### Convert test.json to JSONL for eval
+
+The eval script expects one JSON object per line (JSONL), not a JSON array.
+Run this once to generate test_questions.jsonl:
+
+    python -c "
+    import json
+    data = json.load(open('data/pathvqa/test.json'))
+    with open('data/pathvqa/test_questions.jsonl', 'w') as f:
+        for item in data:
+            q = item['conversations'][0]['value'].replace('<image>', '').strip()
+            entry = {
+                'question_id': item['id'],
+                'image':       item['image'],
+                'text':        q,
+                'answer_type': item.get('answer_type', 'open'),
+                'gt_answer':   item['conversations'][1]['value'],
+            }
+            f.write(json.dumps(entry) + '\n')
+    print('Done:', len(data), 'entries')
+    "
+
+---
+
+## 3. Training
+
+Both runs use DeepSpeed ZeRO-2, LoRA (r=128, alpha=256), frozen backbone, and tune the mm_projector adapter.
+
+### 3a. Baseline Fine-tune
+
+Fine-tunes LLaVA-Med on PathVQA with standard LoRA + MLP adapter tuning. No mHC modules.
+
+    deepspeed llava/train/train.py \
+      --deepspeed scripts/zero2.json \
+      --model_name_or_path microsoft/llava-med-v1.5-mistral-7b \
+      --data_path data/pathvqa/train.json \
+      --image_folder data/pathvqa \
+      --vision_tower openai/clip-vit-large-patch14-336 \
+      --mm_projector_type mlp2x_gelu \
+      --mm_vision_select_layer -2 \
+      --mm_use_im_start_end False \
+      --mm_use_im_patch_token False \
+      --bf16 True \
+      --output_dir ./checkpoints/llava-med-mistral-baseline-pathvqa \
+      --num_train_epochs 3 \
+      --per_device_train_batch_size 4 \
+      --gradient_accumulation_steps 4 \
+      --learning_rate 2e-5 \
+      --warmup_ratio 0.03 \
+      --lr_scheduler_type cosine \
+      --save_strategy epoch \
+      --freeze_backbone True \
+      --tune_mm_mlp_adapter True \
+      --lora_enable True \
+      --lora_r 128 \
+      --lora_alpha 256
+
+### 3b. mHC Fine-tune
+
+Same as baseline but enables the mHC modules. Uses a higher learning rate (1e-4) and warmup (0.05)
+to allow the new mhcmlp and mhcattn layers to converge alongside the LoRA weights.
+
+    deepspeed llava/train/train.py \
+      --deepspeed scripts/zero2.json \
+      --model_name_or_path microsoft/llava-med-v1.5-mistral-7b \
+      --data_path data/pathvqa/train.json \
+      --image_folder data/pathvqa \
+      --vision_tower openai/clip-vit-large-patch14-336 \
+      --mm_projector_type mlp2x_gelu \
+      --mm_vision_select_layer -2 \
+      --mm_use_im_start_end False \
+      --mm_use_im_patch_token False \
+      --bf16 True \
+      --output_dir ./checkpoints/llava-med-mistral-mhc-pathvqa \
+      --num_train_epochs 3 \
+      --per_device_train_batch_size 4 \
+      --gradient_accumulation_steps 4 \
+      --learning_rate 1e-4 \
+      --warmup_ratio 0.05 \
+      --lr_scheduler_type cosine \
+      --max_grad_norm 1.0 \
+      --save_strategy epoch \
+      --freeze_backbone True \
+      --tune_mm_mlp_adapter True \
+      --lora_enable True \
+      --lora_r 128 \
+      --lora_alpha 256 \
+      --mhc_enable True
 
-*Visual instruction tuning towards building large language and vision models with GPT-4 level capabilities in the biomedicine space.*
+Monitor training loss anytime:
 
-[[Paper, NeurIPS 2023 Datasets and Benchmarks Track (Spotlight)](https://arxiv.org/abs/2306.00890)] 
+    grep '"loss"' ./checkpoints/llava-med-mistral-mhc-pathvqa/trainer_state.json | tail -10
 
-**LLaVA-Med: Training a Large Language-and-Vision Assistant for Biomedicine in One Day** <br>
+---
 
-[Chunyuan Li*](https://chunyuan.li/), [Cliff Wong*](https://scholar.google.com/citations?user=Sl05ifcAAAAJ&hl=en), [Sheng Zhang*](https://scholar.google.com/citations?user=-LVEXQ8AAAAJ&hl=en), [Naoto Usuyama](https://www.microsoft.com/en-us/research/people/naotous/), [Haotian Liu](https://hliu.cc), [Jianwei Yang](https://jwyang.github.io/), [Tristan Naumann](https://scholar.google.com/citations?user=cjlSeqwAAAAJ&hl=en), [Hoifung Poon](https://scholar.google.com/citations?user=yqqmVbkAAAAJ&hl=en), [Jianfeng Gao](https://scholar.google.com/citations?user=CQ1cqKkAAAAJ&hl=en) (*Equal Contribution)
-
-<p align="center">
-    <img src="images/llava_med_logo.png" width="50%"> <br>
- 
-  *Generated by  <a href="https://gligen.github.io/">GLIGEN</a>  using the grounded inpainting mode, with three boxes: ``white doctor coat``, ``stethoscope``, ``white doctor hat with a red cross sign``.*
- 
-</p>
-
-
-## Release
-
-- [May 13, 2024] 🔥LLaVA-Med v1.5 is out! It is not only significantly better (see the [evaluation results](docs/llava_med_performance.md#llava-med-15-performance).) but also much easier to use: no more *delta* weights! Now you can directly load our model from the [🤗 Hub](https://huggingface.co/microsoft/llava-med-v1.5-mistral-7b). The original LLaVA-Med (i.e., v1.0.0) codebase has been moved to [Archive](#archive). 
-- [Nov 8, 2023]   LLaVA-Med is open-sourced under the MSR release policy. Huge thanks to commitment of the team, and patience of the community.
-- [Sept, 2023]  LLaVA-Med is accepted in NeurIPS 2023 Datasets and Benchmarks Track, as a spotlight presentation.
-- [June 1, 2023] 🔥 We released **LLaVA-Med: Large Language and Vision Assistant for Biomedicine**, a step towards building biomedical domain large language and vision models with GPT-4 level capabilities.  Checkout the [paper](https://arxiv.org/abs/2306.00890)
-
-<p align="center">
-    <img src="images/llava_med_pipeline.png" width="90%"> <br>
- 
-  *LLaVA-Med was initialized with the general-domain LLaVA and then continuously trained in a curriculum learning fashion (first biomedical concept alignment then full-blown instruction-tuning). We evaluated LLaVA-Med on standard visual conversation and question answering tasks.*
-</p>
-
-[![Code License](https://img.shields.io/badge/Code%20License-Microsoft%20Research-red)](Research%20License.docx)
-[![Data License](https://img.shields.io/badge/Data%20License-CC%20By%20NC%204.0-red.svg)](https://creativecommons.org/licenses/by-nc/4.0/deed.en)
-**Usage and License Notices**: The data, code, and model checkpoints are intended and licensed for research use only. They are also subject to additional restrictions dictated by the Terms of Use: LLaMA, Vicuna and GPT-4 respectively. The data is made available under CC BY NC 4.0. The data, code, and model checkpoints may be used for non-commercial purposes and any models trained using the dataset should be used only for research purposes. It is expressly prohibited for models trained on this data to be used in clinical care or for any clinical decision making purposes.
-
-## Contents
-
-- [Install](#install)
-- [Model Download](#model-download)
-- [Serving](#serving)
-- [Evaluation](#evaluation)
-- [Data Download](#data-download)
-- [Archive](#archive)
-- [Model Description](#model-description)
-
-## Install
-
-1. Clone this repository and navigate to LLaVA-Med folder
-```bash
-https://github.com/microsoft/LLaVA-Med.git
-cd LLaVA-Med
-```
-
-2. Install Package: Create conda environment
-
-```Shell
-conda create -n llava-med python=3.10 -y
-conda activate llava-med
-pip install --upgrade pip  # enable PEP 660 support
-pip install -e .
-```
-
-## Model Download
-
-
- Model Descriptions | 🤗 Huggingface Hub | 
-| --- | ---: |
-| LLaVA-Med v1.5 | [microsoft/llava-med-v1.5-mistral-7b](https://huggingface.co/microsoft/llava-med-v1.5-mistral-7b) |
-
-
-
-## Serving
-
-### Web UI
-
-#### Launch a controller
-```Shell
-python -m llava.serve.controller --host 0.0.0.0 --port 10000
-```
-
-#### Launch a model worker
-```Shell
-python -m llava.serve.model_worker --host 0.0.0.0 --controller http://localhost:10000 --port 40000 --worker http://localhost:40000 --model-path microsoft/llava-med-v1.5-mistral-7b --multi-modal
-```
-Wait until the process finishes loading the model and you see "Uvicorn running on ...".
-
-#### Launch a model worker (Multiple GPUs, when GPU VRAM <= 24GB)
-
-If your the VRAM of your GPU is less than 24GB (e.g., RTX 3090, RTX 4090, etc.), you may try running it with multiple GPUs.
-
-```Shell
-python -m llava.serve.model_worker --host 0.0.0.0 --controller http://localhost:10000 --port 40000 --worker http://localhost:40000 --model-path microsoft/llava-med-v1.5-mistral-7b --multi-modal --num-gpus 2
-```
-Wait until the process finishes loading the model and you see "Uvicorn running on ...".
-
-
-#### Send a test message
-```Shell
-python -m llava.serve.test_message --model-name llava-med-v1.5-mistral-7b --controller http://localhost:10000
-```
-
-#### Launch a gradio web server.
-```Shell
-python -m llava.serve.gradio_web_server --controller http://localhost:10000
-```
-#### You can open your browser and chat with a model now.
-
-
-## Evaluation
-
-### Medical Visual Chat (GPT-assisted Evaluation)
-
-Our GPT-assisted evaluation pipeline for multimodal modeling is provided for a comprehensive understanding of the capabilities of vision-language models.  Please see our paper for more details.
-
-#### 1. Azure OpenAI Connection Info. 
-
-Open [llava/eval/llm.py](llava/eval/llm.py?plain=1#L33) and insert your Azure OpenAI Endpoint and API KEY
-```Shell
-openai_cxn_dict = {
-    'default': {
-      'endpoint': "INSERT YOUR AZURE OPENAI ENDPOINT HERE",
-      'api_key': "INSERT YOUR AZURE OPENAI API KEY HERE",
-    },
-  }
-```
-* GPT-4 inference was only tested using Azure OpenAI API. If you are using OpenAI API, you need to replace [llava/eval/llm.py (line 55)](llava/eval/llm.py?plain=1#L55) AsyncAzureOpenAI with AsyncOpenAI.
-
-#### 2. Deployment ID
-In [llava/eval/eval_multimodal_chat_gpt_score.py (line 55)](llava/eval/eval_multimodal_chat_gpt_score.py?plain=1#L55), replace with your GPT-4 model deployment id if necessary:
-
-#### 3. Download Images
-
-```Shell
-python llava/data/download_images.py \
-    --input_path data/llava_med_test_image_urls.jsonl \
-    --pmc_output_path data/pmc \
-    --images_output_path data/images
-```
-
-#### 4. Multimodal Chat Inference
-In our case, [`llava_med_eval_qa50_qa.jsonl`](/data/eval/llava_med_eval_qa50_qa.jsonl) contains the questions, context (captions and inline-mentions) and responses generated by text-only GPT-4 (0314), which we treat as ground truth.
-
-```Shell
-PYTHONPATH=. python llava/eval/model_vqa.py \
-    --conv-mode mistral_instruct \
-    --model-path microsoft/llava-med-v1.5-mistral-7b \
-    --question-file data/eval/llava_med_eval_qa50_qa.jsonl \
-    --image-folder data/images \
-    --answers-file /path/to/answer-file.jsonl \
-    --temperature 0.0
-```
-
-#### 5. GPT-4 Evaluation of the Generated Answers
-
-```Shell
-python llava/eval/eval_multimodal_chat_gpt_score.py \
-    --answers-file /path/to/answer-file.jsonl \
-    --question-file data/eval/llava_med_eval_qa50_qa.jsonl \
-    --scores-file /path/to/scores-file.jsonl
-```
-
-#### 6. Summarize the Evaluation Results
-
-```Shell
-python llava/eval/summarize_gpt_review.py \
-    --scores-file /path/to/scores-file.jsonl
-```
-
-## Data Download
-
-### LLaVA-Med Dataset
-
-<p align="center">
-    <img src="images/llava_med_dataset.png" width="90%"> <br>
- 
-  *The data statistics of biomedical multimodal instruction-following data: (a,b) The root verb-noun pairs of instruction and responses, where the inner circle of the plot represents the root verb of the output response, and the outer circle represents the direct nouns. (c) The distribution of images and QA pairs on the five domains, one image is shown per domain.*
-</p>
-
-### Data Download
-| Alignment data files | Size |
-| --- | ---: |
-| [llava_med_alignment_500k.json](data/alignment/llava_med_alignment_500k.json) | 341.52 MiB |
-
-| Instruction-Tuning data files | Size |
-| --- | ---: |
-| [llava_med_instruct_10k.json](data/instruct/llava_med_instruct_10k.json) | 19.24 MiB |
-| [llava_med_instruct_60k.json](data/instruct/llava_med_instruct_60k.json) | 	84.65 MiB |
-| [llava_med_instruct_60k_inline_mention.json](data/instruct/llava_med_instruct_60k_inline_mention.json) | 83.61 MiB |
-| [llava_med_instruct_fig_captions.json](data/instruct/llava_med_instruct_fig_captions.json) | 161.39 MiB |
-
-| Evaluation files | Size |
-| --- | ---: |
-| [llava_med_eval_qa50_qa.jsonl](data/eval/llava_med_eval_qa50_qa.jsonl) | 	256.18 KiB |
-| [llava_med_eval_qa50_fig_captions.json](data/eval/llava_med_eval_qa50_fig_captions.json) | 51.82 KiB |
-| [llava_med_qa50_instruct_caption_in_text_cleaned-60k-3epoch.json](data/eval/llava_med_qa50_instruct_caption_in_text_cleaned-60k-3epoch.json) | 100.97 KiB |
-
-| Image URLS | Size |
-| --- | ---: |
-| [llava_med_image_urls.jsonl](data/llava_med_image_urls.jsonl) | 122.82 MiB |
-
-[download_images.py](https://github.com/microsoft/LLaVA-Med/blob/v1.0.0/llava/data/download_images.py) is used to download the PMC articles using the above image_urls file and extract the images
-
-To download our langauge-image multimodal instruction-folllowing dataset, please run the following script:
-```bash
-sh download_data.sh
-```
-
-
-## Archive
-
-- [LLaVA-Med v1.0](https://github.com/microsoft/LLaVA-Med/tree/v1.0.0)
-
-## Model Description 
-
-Large Language and Vision Assistant for bioMedicine (i.e., “LLaVA-Med”) is a large language and vision model trained using a curriculum learning method for adapting LLaVA to the biomedical domain. It is an open-source release intended for research use only to facilitate reproducibility of the corresponding paper  which claims improved performance for open-ended biomedical questions answering tasks, including common visual question answering (VQA) benchmark datasets such as PathVQA and VQA-RAD. 
-
-### Model Uses  
-
-#### Intended Use  
-
-The data, code, and model checkpoints are intended to be used solely for (I) future research on visual-language processing and (II) reproducibility of the experimental results reported in the reference paper. The data, code, and model checkpoints are not intended to be used in clinical care or for any clinical decision making purposes. 
-
-#### Primary Intended Use  
-
-The primary intended use is to support AI researchers reproducing and building on top of this work. LLaVA-Med and its associated models should be helpful for exploring various biomedical vision-language processing (VLP ) and vision question answering (VQA) research questions. 
-
-#### Out-of-Scope Use 
-
-**Any** deployed use case of the model --- commercial or otherwise --- is out of scope. Although we evaluated the models using a broad set of publicly-available research benchmarks, the models and evaluations are intended *for research use only* and not intended for deployed use cases. Please refer to [the associated paper](https://aka.ms/llava-med) for more details. 
-
-### Data 
-
-This model builds upon [PMC-15M dataset](https://aka.ms/biomedclip-paper), which is a large-scale parallel image-text dataset for biomedical vision-language processing. It contains 15 million figure-caption pairs extracted from biomedical research articles in PubMed Central. It covers a diverse range of biomedical image types, such as microscopy, radiography, histology, and more. 
-
-### Limitations 
-
-This model was developed using English corpora, and thus may be considered English-only. This model is evaluated on a narrow set of biomedical benchmark tasks, described in [LLaVA-Med paper](https://aka.ms/llava-med). As such, it is not suitable for use in any clinical setting. Under some conditions, the model may make inaccurate predictions and display limitations, which may require additional mitigation strategies. In particular, this model is likely to carry many of the limitations of the model from which it is derived, [LLaVA](https://llava-vl.github.io/).
-
-Further, this model was developed in part using the [PMC-15M](https://aka.ms/biomedclip-paper) dataset. The figure-caption pairs that make up this dataset may contain biases reflecting the current practice of academic publication. For example, the corresponding papers may be enriched for positive findings, contain examples of extreme cases, and otherwise reflect distributions that are not representative of other sources of biomedical data. 
-
-## Acknowledgement
-
-If you find LLaVA-Med useful for your your research and applications, please cite using this BibTeX:
-
-```bibtex
-@article{li2023llavamed,
-  title={Llava-med: Training a large language-and-vision assistant for biomedicine in one day},
-  author={Li, Chunyuan and Wong, Cliff and Zhang, Sheng and Usuyama, Naoto and Liu, Haotian and Yang, Jianwei and Naumann, Tristan and Poon, Hoifung and Gao, Jianfeng},
-  journal={arXiv preprint arXiv:2306.00890},
-  year={2023}
-}
-```
-
-
-## Related Projects
-
-- [LLaVA](https://llava-vl.github.io/)
-- [BiomedCLIP](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224)
-- [Instruction Tuning with GPT-4](https://github.com/Instruction-Tuning-with-GPT-4/GPT-4-LLM)
+## 4. Evaluation (Inference)
+
+IMPORTANT: Checkpoint folder names must contain the word "mistral" so that builder.py
+correctly routes them through LlavaMistralForCausalLM instead of AutoModelForCausalLM.
+
+### Baseline
+
+    PYTHONPATH=. python llava/eval/model_vqa.py \
+      --model-path ./checkpoints/llava-med-mistral-baseline-pathvqa \
+      --model-base mistralai/Mistral-7B-v0.1 \
+      --question-file data/pathvqa/test_questions.jsonl \
+      --image-folder data/pathvqa \
+      --answers-file results/baseline_answers.jsonl \
+      --conv-mode vicuna_v1
+
+### mHC Model
+
+    PYTHONPATH=. python llava/eval/model_vqa.py \
+      --model-path ./checkpoints/llava-med-mistral-mhc-pathvqa \
+      --model-base mistralai/Mistral-7B-v0.1 \
+      --question-file data/pathvqa/test_questions.jsonl \
+      --image-folder data/pathvqa \
+      --answers-file results/mhc_answers.jsonl \
+      --conv-mode vicuna_v1
+
+Check progress:
+
+    wc -l results/baseline_answers.jsonl
+    wc -l results/mhc_answers.jsonl
+
+---
+
+## 5. Scoring
+
+    python llava/eval/eval_vqa.py \
+      --pred-file results/baseline_answers.jsonl \
+      --anno-file data/pathvqa/test_questions.jsonl
+
+    python llava/eval/eval_vqa.py \
+      --pred-file results/mhc_answers.jsonl \
+      --anno-file data/pathvqa/test_questions.jsonl
+
+---
+
+## 6. Library Changes Made
+
+### 6a. llava/model/builder.py — Tokenizer Fix
+
+PROBLEM: AutoTokenizer.from_pretrained(model_path) raises:
+    KeyError: 'LlavaMistralConfig'
+because HuggingFace's AutoTokenizer does not know about the custom LlavaMistralConfig
+registered in this repo.
+
+FIX: When loading a mistral-based LLaVA checkpoint, load the tokenizer from the
+base model (model_base argument, e.g. mistralai/Mistral-7B-v0.1) instead of from the
+checkpoint path. The model weights still load from model_path via LlavaMistralForCausalLM.
+
+    # Before (broken):
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+
+    # After (fixed):
+    tok_source = model_base if model_base else model_path
+    tokenizer = AutoTokenizer.from_pretrained(tok_source, use_fast=False)
+
+### 6b. llava/train/train.py — mHC Unfreeze Fix
+
+PROBLEM: After LoRA initialization with freeze_backbone=True, the new mHC modules
+(mhcmlp, mhcattn) were also frozen, causing loss=0.0 throughout training since no
+gradients flowed through the classification heads.
+
+FIX: After LoRA wrapping, explicitly unfreeze any parameter whose name contains
+'mhcmlp' or 'mhcattn':
+
+    for name, param in model.named_parameters():
+        if 'mhcmlp' in name or 'mhcattn' in name:
+            param.requires_grad = True
+
+This ensures the mHC layers train while the backbone LLM weights remain frozen.
+
+### 6c. data/pathvqa/test_questions.jsonl — Format Conversion
+
+PROBLEM: The PathVQA test.json is a JSON array. The eval script (model_vqa.py) reads
+the file line-by-line with json.loads(), expecting JSONL format (one object per line).
+
+FIX: Convert once using the script in Section 2. Fields mapped:
+    id              -> question_id
+    image           -> image  (already includes images/test/ prefix)
+    conversations[0].value -> text (human question, stripped of <image> token)
+    conversations[1].value -> gt_answer (stored for scoring)
+
+---
+
+## 7. Repository Structure
+
+    LLaVA-Med/
+    ├── llava/
+    │   ├── model/
+    │   │   ├── builder.py                  # MODIFIED: tokenizer loading fix
+    │   │   └── language_model/
+    │   │       └── llava_mistral.py        # mHC integration
+    │   ├── train/
+    │   │   └── train.py                    # MODIFIED: mHC unfreeze fix
+    │   └── eval/
+    │       └── model_vqa.py                # Inference script (unchanged)
+    ├── data/
+    │   └── pathvqa/
+    │       ├── train.json                  # Training data
+    │       ├── test.json                   # Raw test data
+    │       └── test_questions.jsonl        # GENERATED: use for eval
+    ├── checkpoints/                        # Model weights (git-ignored)
+    ├── results/                            # Eval outputs (git-ignored)
+    └── scripts/
+        └── zero2.json                      # DeepSpeed ZeRO-2 config
