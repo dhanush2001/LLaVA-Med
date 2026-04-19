@@ -1,10 +1,7 @@
 # LLaVA-Med + Multimodal Hierarchical Classifier (mHC) on PathVQA
 
 This repository extends [Microsoft LLaVA-Med v1.5](https://github.com/microsoft/LLaVA-Med) by integrating a
-**Multimodal Hierarchical Classifier (mHC)** for biomedical Visual Question Answering on the **PathVQA** dataset.
-
-The mHC adds hierarchical classification heads (mhcmlp + mhcattn) on top of the LLaVA-Med vision-language backbone,
-enabling richer cross-modal reasoning for pathology images.
+**Manifold-Constrained Hyper-Connections (mHC)** for biomedical Visual Question Answering on the **PathVQA** dataset.
 
 ---
 
