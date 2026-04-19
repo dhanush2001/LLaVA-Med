@@ -49,6 +49,15 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 model = model.merge_and_unload()
                 print('Convert to FP16...')
                 model.to(torch.float16)
+                # Load non-LoRA trainables (mHC weights)
+                import os
+                non_lora_path = os.path.join(model_path, 'non_lora_trainables.bin')
+                if os.path.exists(non_lora_path):
+                    print(f'Loading non-LoRA trainables from {non_lora_path}')
+                    non_lora_sd = torch.load(non_lora_path, map_location='cpu')
+                    non_lora_sd = {(k[11:] if k.startswith('base_model.') else k): v for k, v in non_lora_sd.items()}
+                    model.load_state_dict(non_lora_sd, strict=False)
+                    print(f'Loaded {len(non_lora_sd)} non-LoRA weight tensors')
             else:
                 if 'mpt' in model_name.lower():
                     tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)

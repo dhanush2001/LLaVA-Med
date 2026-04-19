@@ -112,7 +112,8 @@ class mHCResidual(nn.Module):
 
         # Weighted combination of streams
         gates = torch.softmax(self.stream_logits, dim=0)        # [2]
-        return torch.einsum("n,n...->...", gates, streams)      # [..., D]
+        # Scale by n_streams so init matches standard residual + sublayer_out
+        return self.N * torch.einsum("n,n...->...", gates, streams)      # [..., D]
 
 
 # ---------------------------------------------------------------------------

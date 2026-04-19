@@ -1004,6 +1004,13 @@ def train(attn_implementation=None):
         non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(
             model.named_parameters()
         )
+        # Explicitly save mHC params (lose requires_grad after PEFT wrapping)
+        if model_args.use_mhc:
+            for _n, _p in model.named_parameters():
+                if any(_k in _n for _k in ['mhc_attn', 'mhc_mlp', 'log_W', 'stream_logits']):
+                    non_lora_state_dict[_n] = maybe_zero_3(_p, ignore_status=True).cpu()
+            _cnt = sum(1 for k in non_lora_state_dict if 'mhc' in k or 'log_W' in k)
+            rank0_print(f'Explicitly saved {_cnt} mHC weight tensors')
         if training_args.local_rank == 0 or training_args.local_rank == -1:
             model.config.save_pretrained(training_args.output_dir)
             model.save_pretrained(training_args.output_dir, state_dict=state_dict)
