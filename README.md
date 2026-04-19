@@ -1,10 +1,59 @@
 # LLaVA-Med + Sinkhorn-Constrained Residual Mixing (mHC) on PathVQA
 
-This repository extends [Microsoft LLaVA-Med v1.5](https://github.com/microsoft/LLaVA-Med) by integrating a
-**Multimodal Hierarchical Classifier (mHC)** for biomedical Visual Question Answering on the **PathVQA** dataset.
+This repository extends [Microsoft LLaVA-Med v1.5](https://github.com/microsoft/LLaVA-Med) by integrating
+**Manifold-Constrained Hyper-Connections (mHC)** — a residual mixing architecture from
+[DeepSeek (arXiv:2512.24880)](https://arxiv.org/abs/2512.24880) — for biomedical Visual Question Answering
+on the **PathVQA** dataset.
 
-The mHC adds hierarchical classification heads (mhcmlp + mhcattn) on top of the LLaVA-Med vision-language backbone,
-enabling richer cross-modal reasoning for pathology images.
+mHC replaces the standard fixed residual connection with a learned **doubly stochastic mixing matrix**,
+constrained to the Birkhoff Polytope via Sinkhorn-Knopp normalization. This preserves signal magnitude
+across layers while enabling flexible inter-layer information routing — improving open-ended clinical
+reasoning without destabilizing training.
+
+---
+
+## Results (PathVQA)
+
+| Metric       | Baseline (LLaVA-Med) | mHC-v4  | Δ       |
+|--------------|----------------------|---------|---------|
+| Overall      | 57.21%               | 59.13%  | +1.92%  |
+| Open-Ended   | 23.24%               | 29.04%  | **+5.80%** |
+| Close-Ended  | 91.14%               | 89.17%  | -1.97%  |
+
+The open-ended gain is the primary result: mHC's flexible residual routing helps the model generate
+more accurate free-form clinical descriptions. The small closed-ended drop reflects a capacity shift
+toward generative reasoning.
+
+---
+
+## How mHC Works
+
+Standard residual connections fix the inter-layer connection strength at 1.0:
+
+```
+x_{l+1} = x_l + F(x_l)
+```
+
+Unconstrained Hyper-Connections (HC) learn mixing weights but become catastrophically unstable at
+scale (3000× signal amplification at 27B parameters). mHC resolves this by projecting the mixing
+matrix onto the **Birkhoff Polytope** — the set of doubly stochastic matrices where every row and
+column sums to 1:
+
+```
+x_{l+1} = DS(W) · [x_l, F(x_l)]    # DS = Sinkhorn projection
+```
+
+This guarantees signal conservation: information can be rerouted between streams but cannot be
+amplified or lost. See `mhc.py` for the implementation.
+
+### mhc.py — Key Components
+
+| Component | Description |
+|-----------|-------------|
+| `sinkhorn_normalize(log_W, n_iters=20)` | Projects log-domain weight matrix onto Birkhoff Polytope via 20 iterations of alternating row/column normalization |
+| `mHCResidual.log_W` | Learnable 2×2 log-domain mixing matrix. Diagonal init (2.0) → near-identity after Sinkhorn |
+| `mHCResidual.stream_logits` | Learnable scalar logits; softmax gate blends the two output streams (50/50 at init) |
+| `mHCResidual.forward(residual, sublayer_out)` | Mixes residual and sublayer output via doubly stochastic W, gates the result, scales by N=2 |
 
 ---
 
