@@ -10,6 +10,10 @@ def sinkhorn_normalize(log_W: torch.Tensor, n_iters: int = 20) -> torch.Tensor:
     for _ in range(n_iters):
         W = W / (W.sum(dim=-1, keepdim=True) + 1e-8)   # row normalise
         W = W / (W.sum(dim=-2, keepdim=True) + 1e-8)   # col normalise
+    # Finish on a row normalise so each stream's mixing weights sum to exactly 1,
+    # i.e. a proper convex combination — which forward() relies on. After n_iters
+    # the matrix is already near doubly stochastic, so columns stay ~1 too.
+    W = W / (W.sum(dim=-1, keepdim=True) + 1e-8)
     return W
 
 

@@ -801,6 +801,10 @@ def train(attn_implementation=None):
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     if model_args.use_mhc and model_args.n_streams != 2:
         raise ValueError("--n_streams must be 2 when --use_mhc is set (Birkhoff polytope requires a square mixing matrix)")
+    if model_args.use_mhc and model_args.vision_tower is None:
+        # mHC is only wired into LlavaMistralModel; the text-only LlamaForCausalLM
+        # path below would silently ignore it. Fail loudly instead.
+        raise ValueError("--use_mhc requires --vision_tower (mHC is only implemented for the LlavaMistral path)")
     local_rank = training_args.local_rank
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
 

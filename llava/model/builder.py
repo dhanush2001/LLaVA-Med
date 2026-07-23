@@ -42,7 +42,18 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             if model_base is not None:
                 from peft import PeftModel
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
-                model = AutoModelForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, **kwargs)
+                # Propagate mHC settings from the fine-tuned config onto the base model,
+                # otherwise LlavaMistralModel never instantiates the mHC layers and the
+                # non-LoRA mHC weights below silently fail to load (strict=False).
+                lora_cfg = AutoConfig.from_pretrained(model_path)
+                mhc_overrides = {}
+                if getattr(lora_cfg, 'use_mhc', False):
+                    mhc_overrides = {
+                        'use_mhc': True,
+                        'n_streams': getattr(lora_cfg, 'n_streams', 2),
+                        'n_iters_sinkhorn': getattr(lora_cfg, 'n_iters_sinkhorn', 20),
+                    }
+                model = AutoModelForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, **mhc_overrides, **kwargs)
                 print(f"Loading LoRA weights from {model_path}")
                 model = PeftModel.from_pretrained(model, model_path)
                 print(f"Merging weights")
@@ -56,8 +67,16 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                     print(f'Loading non-LoRA trainables from {non_lora_path}')
                     non_lora_sd = torch.load(non_lora_path, map_location='cpu')
                     non_lora_sd = {(k[11:] if k.startswith('base_model.') else k): v for k, v in non_lora_sd.items()}
-                    model.load_state_dict(non_lora_sd, strict=False)
-                    print(f'Loaded {len(non_lora_sd)} non-LoRA weight tensors')
+                    # After merge_and_unload the params are named `model.layers...`, but the
+                    # saved keys carry an extra `model.` (from the PEFT `base_model.model.`
+                    # wrapper). Strip it so the keys actually match — matches upstream LLaVA.
+                    if any(k.startswith('model.model.') for k in non_lora_sd):
+                        non_lora_sd = {(k[6:] if k.startswith('model.') else k): v for k, v in non_lora_sd.items()}
+                    missing, unexpected = model.load_state_dict(non_lora_sd, strict=False)
+                    if unexpected:
+                        print(f'WARNING: {len(unexpected)} non-LoRA tensors matched no parameter '
+                              f'(e.g. {list(unexpected)[:3]}); mHC weights may not have loaded')
+                    print(f'Loaded {len(non_lora_sd) - len(unexpected)}/{len(non_lora_sd)} non-LoRA weight tensors')
             else:
                 if 'mpt' in model_name.lower():
                     tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
