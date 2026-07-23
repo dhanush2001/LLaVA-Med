@@ -860,7 +860,7 @@ def train(attn_implementation=None):
         model.model.requires_grad_(False)
         if model_args.use_mhc:
             for name, param in model.named_parameters():
-                if any(k in name for k in ['mhcmlp', 'mhcattn', 'lora_']):
+                if any(k in name for k in ['mhc_mlp', 'mhc_attn', 'lora_']):
                     param.requires_grad = True
 
     if training_args.bits in [4, 8]:
@@ -895,7 +895,7 @@ def train(attn_implementation=None):
         model = get_peft_model(model, lora_config)
         if model_args.use_mhc:
             for name, param in model.named_parameters():
-                if any(k in name for k in ['mhcmlp', 'mhcattn']):
+                if any(k in name for k in ['mhc_mlp', 'mhc_attn']):
                     param.requires_grad = True
             rank0_print("Re-enabled mHC parameters for training")
 

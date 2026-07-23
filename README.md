@@ -44,9 +44,9 @@ x_{l+1} = DS(W) · [x_l, F(x_l)]    # DS = Sinkhorn projection
 ```
 
 This guarantees signal conservation: information can be rerouted between streams but cannot be
-amplified or lost. See `mhc.py` for the implementation.
+amplified or lost. See `llava/model/mhc.py` for the implementation.
 
-### mhc.py — Key Components
+### llava/model/mhc.py — Key Components
 
 | Component | Description |
 |-----------|-------------|
@@ -182,8 +182,12 @@ deepspeed llava/train/train.py \
   --lora_enable True \
   --lora_r 128 \
   --lora_alpha 256 \
-  --mhc_enable True
+  --use_mhc True
 ```
+
+> mHC is toggled by `--use_mhc True` (defined in `train.py`). Two related flags default to
+> sensible values and rarely need changing: `--n_streams 2` (must be 2 — the Birkhoff polytope
+> requires a square mixing matrix) and `--n_iters_sinkhorn 20` (Sinkhorn-Knopp iterations).
 
 Monitor training loss anytime:
 
@@ -276,18 +280,18 @@ parameters (`log_W`, `stream_logits`) were also frozen, causing `loss=0.0` throu
 training since no gradients flowed through the residual mixing layers.
 
 **Fix:** After LoRA wrapping, explicitly unfreeze any parameter belonging to an `mHCResidual`
-module. The parameters to unfreeze are `log_W` and `stream_logits` — identifiable by the
-`mhc_residual` name prefix used in `llava_mistral.py`:
+module. The modules are attached as `mhc_attn` and `mhc_mlp` on each decoder layer in
+`llava_mistral.py`, and each holds the learnable `log_W` and `stream_logits` parameters:
 
 ```python
 for name, param in model.named_parameters():
-    if 'mhc_residual' in name:
+    if any(k in name for k in ['mhc_attn', 'mhc_mlp']):
         param.requires_grad = True
 ```
 
-> **Note:** If your integration names the modules differently (e.g. `mhcmlp`, `mhcattn`),
-> update the string match accordingly. The key point is that all `mHCResidual` parameters
-> must have `requires_grad = True` after LoRA wrapping.
+> **Note:** The match string must correspond to the exact module attribute names used in
+> `llava_mistral.py` (`mhc_attn` / `mhc_mlp`, with underscores). The key point is that all
+> `mHCResidual` parameters must have `requires_grad = True` after LoRA wrapping.
 
 ### 6c. `data/pathvqa/test_questions.jsonl` — Format Conversion
 
@@ -312,13 +316,13 @@ LLaVA-Med/
 ├── llava/
 │   ├── model/
 │   │   ├── builder.py                  # MODIFIED: tokenizer loading fix
+│   │   ├── mhc.py                      # mHCResidual module (Sinkhorn + doubly stochastic mixing)
 │   │   └── language_model/
-│   │       └── llava_mistral.py        # mHC integration (mHCResidual)
+│   │       └── llava_mistral.py        # mHC integration (patches each decoder layer)
 │   ├── train/
 │   │   └── train.py                    # MODIFIED: mHC unfreeze fix
 │   └── eval/
 │       └── model_vqa.py                # Inference script (unchanged)
-├── mhc.py                              # mHCResidual module (Sinkhorn + doubly stochastic mixing)
 ├── data/
 │   └── pathvqa/
 │       ├── train.json                  # Training data
