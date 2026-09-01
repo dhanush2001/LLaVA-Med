@@ -958,6 +958,17 @@ def train(attn_implementation=None):
             model.requires_grad_(False)
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = True
+            # model.requires_grad_(False) above also re-freezes the LoRA adapters and
+            # mHC params that were enabled earlier. Re-enable them so mm_projector,
+            # LoRA, and mHC all train together (otherwise only mm_projector trains).
+            if training_args.lora_enable:
+                for name, param in model.named_parameters():
+                    if 'lora_' in name:
+                        param.requires_grad = True
+            if model_args.use_mhc:
+                for name, param in model.named_parameters():
+                    if any(k in name for k in ['mhc_mlp', 'mhc_attn']):
+                        param.requires_grad = True
 
         model.config.freeze_mm_mlp_adapter = training_args.freeze_mm_mlp_adapter
         if training_args.freeze_mm_mlp_adapter:
@@ -985,6 +996,24 @@ def train(attn_implementation=None):
                 if hasattr(module, 'weight'):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
+
+    # Sanity check: report which parameter groups actually train.
+    _trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    _total = sum(p.numel() for p in model.parameters())
+    _groups = {'lora': 0, 'mhc': 0, 'mm_projector': 0, 'other': 0}
+    for _n, _p in model.named_parameters():
+        if not _p.requires_grad:
+            continue
+        if 'lora_' in _n:
+            _groups['lora'] += _p.numel()
+        elif any(k in _n for k in ['mhc_mlp', 'mhc_attn', 'log_W', 'stream_logits']):
+            _groups['mhc'] += _p.numel()
+        elif 'mm_projector' in _n:
+            _groups['mm_projector'] += _p.numel()
+        else:
+            _groups['other'] += _p.numel()
+    rank0_print(f"Trainable params: {_trainable:,} / {_total:,} "
+                f"({100 * _trainable / _total:.4f}%) -> {_groups}")
 
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args)
