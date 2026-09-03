@@ -11,3 +11,4 @@ data/
 
 llava_med.egg-info/
 *.egg-info/
+/scripts
