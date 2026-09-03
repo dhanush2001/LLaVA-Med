@@ -1,13 +1,13 @@
 # LLaVA-Med + Sinkhorn-Constrained Residual Mixing (mHC) on PathVQA
 
 This repository extends [Microsoft LLaVA-Med v1.5](https://github.com/microsoft/LLaVA-Med) by integrating
-**Manifold-Constrained Hyper-Connections (mHC)** — a residual mixing architecture from
-[DeepSeek (arXiv:2512.24880)](https://arxiv.org/abs/2512.24880) — for biomedical Visual Question Answering
+**Manifold-Constrained Hyper-Connections (mHC) a residual mixing architecture from
+[DeepSeek (arXiv:2512.24880)](https://arxiv.org/abs/2512.24880) for biomedical Visual Question Answering
 on the **PathVQA** dataset.
 
 mHC replaces the standard fixed residual connection with a learned **doubly stochastic mixing matrix**,
 constrained to the Birkhoff Polytope via Sinkhorn-Knopp normalization. This preserves signal magnitude
-across layers while enabling flexible inter-layer information routing — improving open-ended clinical
+across layers while enabling flexible inter-layer information routing improving open-ended clinical
 reasoning without destabilizing training.
 
 ---
@@ -36,7 +36,7 @@ x_{l+1} = x_l + F(x_l)
 
 Unconstrained Hyper-Connections (HC) learn mixing weights but become catastrophically unstable at
 scale (3000× signal amplification at 27B parameters). mHC resolves this by projecting the mixing
-matrix onto the **Birkhoff Polytope** — the set of doubly stochastic matrices where every row and
+matrix onto the **Birkhoff Polytope** the set of doubly stochastic matrices where every row and
 column sums to 1:
 
 ```
