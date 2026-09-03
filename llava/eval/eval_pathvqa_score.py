@@ -3,9 +3,12 @@ Score PathVQA predictions produced by llava/eval/model_vqa.py.
 
 Reports Overall / Open-Ended / Close-Ended accuracy, matching the metric used
 in the project README:
-  - Close-ended (yes/no): exact match after normalization (1.0 / 0.0)
+  - Close-ended (yes/no): yes/no polarity match after normalization (1.0 / 0.0)
   - Open-ended:           configurable via --open-metric (default: recall)
   - Overall:              mean of every sample's per-question score
+
+Questions present in the annotations but missing from the predictions are
+scored 0 (not dropped), so partial-coverage runs are comparable.
 
 --open-metric choices:
   recall   token recall = |gt_tokens ∩ pred_tokens| / |gt_tokens|   (partial credit)
@@ -33,18 +36,39 @@ def load_jsonl(path):
 
 
 def normalize(text):
-    """Lowercase, drop punctuation and articles, collapse whitespace."""
+    """Lowercase, replace punctuation with spaces, drop articles, collapse whitespace.
+    Punctuation becomes a space (not deleted) so hyphenated/slashed terms like
+    'T-cell' split into ['t', 'cell'] and match a spaced 'T cell'."""
     text = text.lower().strip()
-    text = text.translate(str.maketrans("", "", string.punctuation))
+    text = text.translate(str.maketrans(string.punctuation, " " * len(string.punctuation)))
     tokens = [t for t in re.split(r"\s+", text) if t and t not in ARTICLES]
     return tokens
 
 
 def is_closed(answer_type, gt_norm):
-    """PathVQA closed questions are yes/no."""
-    if answer_type and str(answer_type).lower() in {"closed", "close", "yes/no"}:
-        return True
+    """PathVQA closed questions are yes/no. Trust answer_type when it is present
+    (so an open question whose answer happens to be 'yes'/'no' stays open); only
+    fall back to detecting a yes/no gold when answer_type is absent."""
+    if answer_type:
+        return str(answer_type).lower() in {"closed", "close", "yes/no"}
     return gt_norm in (["yes"], ["no"])
+
+
+def score_closed(gt_norm, pred_norm):
+    """Score a closed question by polarity, not substring membership. Closed golds
+    are almost always yes/no and the model typically leads with the answer
+    ('Yes, it is'), so match the first token; otherwise credit an unambiguous
+    yes/no elsewhere in the answer. A prediction containing both (or neither) is
+    wrong. For a rare non-yes/no closed gold, require exact match."""
+    if gt_norm in (["yes"], ["no"]):
+        gold = gt_norm[0]
+        if pred_norm[:1] in (["yes"], ["no"]):
+            return 1.0 if pred_norm[0] == gold else 0.0
+        has_yes, has_no = "yes" in pred_norm, "no" in pred_norm
+        if has_yes ^ has_no:
+            return 1.0 if (gold == "yes") == has_yes else 0.0
+        return 0.0
+    return 1.0 if pred_norm == gt_norm else 0.0
 
 
 def main():
@@ -66,14 +90,17 @@ def main():
 
     for a in annos:
         qid = a["question_id"]
-        if qid not in preds:
-            missing += 1
-            continue
         gt_norm = normalize(a.get("gt_answer", ""))
-        pred_norm = normalize(preds[qid])
+        if qid in preds:
+            pred_norm = normalize(preds[qid])
+        else:
+            # No prediction -> score wrong (empty pred) rather than dropping it,
+            # so a partial-coverage run doesn't get an inflated denominator.
+            missing += 1
+            pred_norm = []
 
         if is_closed(a.get("answer_type"), gt_norm):
-            score = 1.0 if gt_norm == pred_norm or (gt_norm and gt_norm[0] in pred_norm) else 0.0
+            score = score_closed(gt_norm, pred_norm)
             close_scores.append(score)
         else:
             if not gt_norm:
@@ -95,11 +122,11 @@ def main():
     print(f"Annotations file : {args.anno_file}")
     print(f"Scored {len(all_scores)} questions "
           f"({len(close_scores)} closed, {len(open_scores)} open"
-          + (f", {missing} missing predictions" if missing else "") + ")")
+          + (f"; {missing} missing predictions scored 0" if missing else "") + ")")
     print("-" * 48)
     print(f"Overall     : {pct(all_scores):6.2f}%")
     print(f"Open-Ended  : {pct(open_scores):6.2f}%   (open-metric: {args.open_metric})")
-    print(f"Close-Ended : {pct(close_scores):6.2f}%   (exact match)")
+    print(f"Close-Ended : {pct(close_scores):6.2f}%   (yes/no match)")
 
 
 if __name__ == "__main__":
